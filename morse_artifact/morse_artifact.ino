@@ -1,25 +1,27 @@
-#include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <RadioLib.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// Network configuration
-const char* ssid = "Langengevej";
-const char* password = "DDEA10JDFD2";
-const char* serverAddress = "192.168.8.146"; 
-const int serverPort = 8765;
+#define OLED_SDA 17
+#define OLED_SCL 18
+#define OLED_RST 21
+#define VEXT_PIN 36 
 
-// Hardware configuration
+#define LORA_NSS 8
+#define LORA_DIO1 14
+#define LORA_NRST 12
+#define LORA_BUSY 13
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
+
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 
 #define BUTTON_PIN 3
 #define LED_PIN 4
 
-// Timing and State
 const int DEBOUNCE_DELAY = 20;
 const int DIT_DAH_THRESHOLD = 250; 
 const int LETTER_TIMEOUT = 600;
@@ -31,66 +33,96 @@ bool lastButtonState = HIGH;
 String currentSequence = "";
 char lastChar = ' ';
 
-// New State Variables for Receiving
+// Reception State
 bool isReceiving = false;
 String receivedMessage = "";
+String rxAnimSequence = ""; 
+String myID = ""; 
 
-WebSocketsClient webSocket;
+volatile bool receivedFlag = false;
+
+#if defined(ESP8266) || defined(ESP32)
+  ICACHE_RAM_ATTR
+#endif
+void setFlag(void) {
+  receivedFlag = true;
+}
 
 const char* morseTable[] = {
   ".-", "-...", "-.-.", "-..", ".", "..-.", "--.", "....", "..", ".---",
   "-.-", ".-..", "--", "-.", "---", ".--.", "--.-", ".-.", "...", "-",
-  "..-", "...-", ".--", "-..-", "-.--", "--..", ".-.-", "---.", // A-Z, Æ, Ø
-  "-----", ".----", "..---", "...--", "....-", ".....", "-....", "--...", "---..", "----." // 0-9
+  "..-", "...-", ".--", "-..-", "-.--", "--..", ".-.-", "---.", 
+  "-----", ".----", "..---", "...--", "....-", ".....", "-....", "--...", "---..", "----." 
 };
 const char alphaTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZÆØ0123456789";
 
-void wsDelay(unsigned long ms) {
-  unsigned long start = millis();
-  while (millis() - start < ms) {
-    webSocket.loop();
-    delay(1); 
-  }
-}
-
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-  if (type == WStype_TEXT) {
-    String msg = (char*)payload;
-    playMorseString(msg);
-  }
-}
-
 void setup() {
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(LED_PIN, OUTPUT);
-  
+  Serial.begin(115200);
+  delay(1000); 
+
+  uint64_t mac = ESP.getEfuseMac();
+  myID = String((uint16_t)(mac >> 32), HEX);
+  myID.toUpperCase();
+
+  pinMode(VEXT_PIN, OUTPUT);
+  digitalWrite(VEXT_PIN, LOW); 
+  delay(50);
+
+  pinMode(OLED_RST, OUTPUT);
+  digitalWrite(OLED_RST, LOW);
+  delay(20);
+  digitalWrite(OLED_RST, HIGH);
+  delay(20);
+
+  Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     for(;;); 
   }
   
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setTextWrap(true); // Ensures text wrapping is enabled
-  display.setCursor(0, 0);
-  display.print("Connecting WiFi...");
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  display.print("BOOTING SYS...");
   display.display();
 
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  int state = radio.begin(868.0);
+  if (state != RADIOLIB_ERR_NONE) {
+    display.print("\nRADIO ERR");
+    display.display();
+    for(;;);
   }
 
-  webSocket.begin(serverAddress, serverPort, "/");
-  webSocket.onEvent(webSocketEvent);
-  webSocket.setReconnectInterval(5000);
+  radio.setDio1Action(setFlag);
+  radio.startReceive();
+  
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
   
   updateDisplay();
 }
 
 void loop() {
-  webSocket.loop();
-  
-  // Block user input while receiving and beeping a message
+  if (receivedFlag) {
+    receivedFlag = false;
+    String str;
+    int state = radio.readData(str);
+    
+    if (state == RADIOLIB_ERR_NONE) {
+      int delimiter = str.indexOf(':');
+      if (delimiter != -1) {
+        String senderID = str.substring(0, delimiter);
+        String payload = str.substring(delimiter + 1);
+        if (senderID != myID) {
+          playMorseString(payload);
+        }
+      } else {
+        playMorseString(str); 
+      }
+    }
+    radio.startReceive();
+  }
+
   if (isReceiving) return;
   
   bool buttonState = digitalRead(BUTTON_PIN);
@@ -101,7 +133,6 @@ void loop() {
     pressTime = currentTime;
     digitalWrite(LED_PIN, HIGH);
 
-    // Clear received message from screen when user starts typing
     if (receivedMessage.length() > 0) {
       receivedMessage = "";
       updateDisplay();
@@ -125,8 +156,10 @@ void loop() {
     currentSequence = "";
     
     if (lastChar != '?') {
-      String msg = String(lastChar);
-      webSocket.sendTXT(msg);
+      String msgStr = String(lastChar);
+      String txPayload = myID + ":" + msgStr;
+      radio.transmit(txPayload);
+      radio.startReceive(); 
     }
     updateDisplay();
   }
@@ -148,53 +181,83 @@ void playMorseString(String text) {
   for (int i = 0; i < text.length(); i++) {
     char c = text[i];
     
-    // Play the beep first
     if (c == ' ') {
-      wsDelay(LETTER_TIMEOUT); 
+      receivedMessage += " ";
+      updateDisplay();
+      delay(LETTER_TIMEOUT); 
     } else {
       for (int j = 0; j < 38; j++) { 
         if (alphaTable[j] == c) {
-          blinkSequence(morseTable[j]);
-          wsDelay(LETTER_TIMEOUT); 
+          String seq = morseTable[j];
+          rxAnimSequence = "";
+          
+          for (int k = 0; k < seq.length(); k++) {
+            rxAnimSequence += seq[k];
+            updateDisplay(); 
+            
+            digitalWrite(LED_PIN, HIGH);
+            if (seq[k] == '.') delay(DIT_DAH_THRESHOLD); 
+            else delay(DIT_DAH_THRESHOLD * 3); 
+            
+            digitalWrite(LED_PIN, LOW);
+            delay(DIT_DAH_THRESHOLD); 
+          }
+          
+          receivedMessage += c;
+          rxAnimSequence = "";
+          updateDisplay();
+          delay(LETTER_TIMEOUT); 
           break;
         }
       }
     }
-    
-    // Append character and update display after beeping
-    receivedMessage += c;
-    updateDisplay();
   }
-  
   isReceiving = false;
-}
-
-void blinkSequence(String seq) {
-  for (int i = 0; i < seq.length(); i++) {
-    digitalWrite(LED_PIN, HIGH);
-    if (seq[i] == '.') wsDelay(DIT_DAH_THRESHOLD); 
-    else wsDelay(DIT_DAH_THRESHOLD * 3); 
-    
-    digitalWrite(LED_PIN, LOW);
-    wsDelay(DIT_DAH_THRESHOLD); 
-  }
+  updateDisplay();
 }
 
 void updateDisplay() {
   display.clearDisplay();
   
-  if (receivedMessage.length() > 0) {
-    // Show incoming message
-    display.setTextSize(2); 
-    display.setCursor(0, 0);
-    display.print(receivedMessage);
+  // Tactical Top Banner (Inverted)
+  display.fillRect(0, 0, 128, 12, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(34, 2);
+  display.print("MORSE CODE");
+
+  // Status Text & Divider
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 16);
+
+  if (isReceiving) {
+    display.print(">> INCOMING SIGNAL");
+  } else if (receivedMessage.length() > 0) {
+    display.print(">> LAST RECEIVED");
   } else {
-    // Show user input
+    display.print(">> SECURE CHANNEL");
+  }
+  display.drawLine(0, 26, 128, 26, SSD1306_WHITE);
+
+  // Main Text Area
+  display.setCursor(0, 32);
+  display.setTextWrap(true);
+
+  if (receivedMessage.length() > 0 || isReceiving) {
+    display.setTextSize(1);
+    display.print(receivedMessage);
+    
+    if (isReceiving) {
+      display.setCursor(0, 52);
+      display.setTextSize(2);
+      display.print(rxAnimSequence);
+    }
+  } else {
     display.setTextSize(2);
-    display.setCursor(0, 0);
     display.print(currentSequence);
-    display.setTextSize(4);
-    display.setCursor(50, 30);
+    
+    display.setTextSize(3);
+    display.setCursor(105, 36);
     display.print(lastChar);
   }
   

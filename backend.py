@@ -1,48 +1,100 @@
-import asyncio
-import websockets
+import serial
+import serial.tools.list_ports
+import threading
+import sys
+import time
 
-async def receive_messages(websocket):
-    """Listens for incoming characters and prints them immediately."""
+BAUD_RATE = 115200
+MY_ID = "PC"
+
+def find_bridge_port():
+    ports = serial.tools.list_ports.comports()
+    keywords = ["CP210", "Silicon Labs", "CH340", "USB to UART", "FTDI"]
+    candidates = []
+
+    # Find all Heltec/ESP32 compatible ports
+    for port, desc, hwid in ports:
+        if any(keyword.lower() in desc.lower() or keyword.lower() in hwid.lower() for keyword in keywords):
+            candidates.append(port)
+
+    if not candidates:
+        print("[!] No compatible serial ports found.")
+        sys.exit(1)
+
+    print("Probing candidate ports for the Bridge...")
+    for port in candidates:
+        try:
+            # Open port and prevent ESP32 from resetting indefinitely
+            ser = serial.Serial(port, BAUD_RATE, timeout=0.5)
+            ser.setDTR(False)
+            ser.setRTS(False)
+            
+            # Wait 1.5s in case opening the port triggered a hardware reset
+            time.sleep(1.5) 
+            
+            ser.write(b"PING\n")
+            ser.flush()
+
+            start_time = time.time()
+            while time.time() - start_time < 1.0:
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if "BRIDGE_ACK" in line or "BRIDGE_LOG" in line:
+                    ser.close()
+                    print(f"[✓] Bridge confirmed on {port}")
+                    return port
+            ser.close()
+        except Exception:
+            pass
+
+    print("\n[!] Could not verify the Bridge on any port.")
+    sys.exit(1)
+
+def receive_from_bridge(ser):
+    while True:
+        try:
+            line = ser.readline().decode('utf-8', errors='ignore').strip()
+            if line:
+                if line.startswith("BRIDGE_LOG:"):
+                    print(f"\n[🔧 {line}]")
+                elif ":" in line:
+                    sender_id, payload = line.split(":", 1)
+                    if sender_id != MY_ID:
+                        print(payload, end='', flush=True)
+                else:
+                    print(line, end='', flush=True)
+        except serial.SerialException:
+            print("\n[!] Connection to bridge lost.")
+            break
+        except Exception:
+            pass
+
+def main():
+    serial_port = find_bridge_port()
+
     try:
-        async for message in websocket:
-            # Print without newline to form words dynamically
-            print(f"{message}", end='', flush=True)
-    except websockets.exceptions.ConnectionClosed:
-        print("\nESP32 Device disconnected.")
+        ser = serial.Serial(serial_port, BAUD_RATE, timeout=0.1)
+        ser.setDTR(False)
+        ser.setRTS(False)
+    except Exception as e:
+        print(f"[!] Could not open port {serial_port}: {e}")
+        sys.exit(1)
 
-async def send_messages(websocket):
-    """Waits for user input and sends it to the device."""
+    print(f"\nConnected to LoRa Bridge on {serial_port}.")
+    print("Type a message and press Enter to send at any time.\n" + "-"*40)
+
+    listener_thread = threading.Thread(target=receive_from_bridge, args=(ser,), daemon=True)
+    listener_thread.start()
+
     try:
         while True:
-            # Run blocking input() in a separate thread
-            response = await asyncio.to_thread(input, "")
-            if response:
-                await websocket.send(response)
-                print(f"\n[Sent: {response}]")
-    except websockets.exceptions.ConnectionClosed:
-        pass # Handled by receive_messages
+            msg = input()
+            if msg:
+                tx_payload = f"{MY_ID}:{msg}\n"
+                ser.write(tx_payload.encode('utf-8'))
+                ser.flush()
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        ser.close()
 
-async def handle_client(websocket):
-    print("ESP32 Device connected. Type a message and press Enter to send at any time.\n---")
-    
-    # Run both tasks concurrently
-    recv_task = asyncio.create_task(receive_messages(websocket))
-    send_task = asyncio.create_task(send_messages(websocket))
-    
-    # Wait until either task finishes (connection closed)
-    done, pending = await asyncio.wait(
-        [recv_task, send_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    
-    # Cancel the remaining pending tasks
-    for task in pending:
-        task.cancel()
-
-async def main():
-    async with websockets.serve(handle_client, "0.0.0.0", 8765):
-        print("WebSocket server started on ws://0.0.0.0:8765")
-        await asyncio.Future()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    main()
