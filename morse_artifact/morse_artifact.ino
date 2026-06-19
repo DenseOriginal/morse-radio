@@ -22,9 +22,10 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 #define BUTTON_PIN 3
 #define LED_PIN 4
 
+// Standard input timings (unchanged)
 const int DEBOUNCE_DELAY = 20;
-const int DIT_DAH_THRESHOLD = 250; 
-const int LETTER_TIMEOUT = 600;
+const int DIT_DAH_THRESHOLD = 200; 
+const int LETTER_TIMEOUT = 500;
 
 unsigned long pressTime = 0;
 unsigned long releaseTime = 0;
@@ -109,15 +110,29 @@ void loop() {
     int state = radio.readData(str);
     
     if (state == RADIOLIB_ERR_NONE) {
-      int delimiter = str.indexOf(':');
-      if (delimiter != -1) {
-        String senderID = str.substring(0, delimiter);
-        String payload = str.substring(delimiter + 1);
-        if (senderID != myID) {
-          playMorseString(payload);
-        }
-      } else {
-        playMorseString(str); 
+      int firstColon = str.indexOf(':');
+      int secondColon = str.indexOf(':', firstColon + 1);
+      int thirdColon = str.indexOf(':', secondColon + 1);
+
+      String senderID = "";
+      String payload = str;
+      int rxDitTime = DIT_DAH_THRESHOLD;
+      int rxLetterTime = LETTER_TIMEOUT;
+
+      if (thirdColon != -1) {
+        // Format: ID:DIT:LETTER:MSG (From PC)
+        senderID = str.substring(0, firstColon);
+        rxDitTime = str.substring(firstColon + 1, secondColon).toInt();
+        rxLetterTime = str.substring(secondColon + 1, thirdColon).toInt();
+        payload = str.substring(thirdColon + 1);
+      } else if (firstColon != -1) {
+        // Format: ID:MSG (From another remote)
+        senderID = str.substring(0, firstColon);
+        payload = str.substring(firstColon + 1);
+      }
+
+      if (senderID != myID) {
+        playMorseString(payload, rxDitTime, rxLetterTime);
       }
     }
     radio.startReceive();
@@ -173,7 +188,7 @@ char translateMorse(String seq) {
   return '?'; 
 }
 
-void playMorseString(String text) {
+void playMorseString(String text, int ditTime, int letterTime) {
   isReceiving = true;
   receivedMessage = "";
   text.toUpperCase();
@@ -184,7 +199,7 @@ void playMorseString(String text) {
     if (c == ' ') {
       receivedMessage += " ";
       updateDisplay();
-      delay(LETTER_TIMEOUT); 
+      delay(letterTime); 
     } else {
       for (int j = 0; j < 38; j++) { 
         if (alphaTable[j] == c) {
@@ -196,17 +211,17 @@ void playMorseString(String text) {
             updateDisplay(); 
             
             digitalWrite(LED_PIN, HIGH);
-            if (seq[k] == '.') delay(DIT_DAH_THRESHOLD); 
-            else delay(DIT_DAH_THRESHOLD * 3); 
+            if (seq[k] == '.') delay(ditTime); 
+            else delay(ditTime * 3); 
             
             digitalWrite(LED_PIN, LOW);
-            delay(DIT_DAH_THRESHOLD); 
+            delay(ditTime); 
           }
           
           receivedMessage += c;
           rxAnimSequence = "";
           updateDisplay();
-          delay(LETTER_TIMEOUT); 
+          delay(letterTime); 
           break;
         }
       }

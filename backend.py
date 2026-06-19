@@ -7,12 +7,15 @@ import time
 BAUD_RATE = 115200
 MY_ID = "PC"
 
+# Playback speed configuration for the remote (in milliseconds)
+FAST_DIT_MS = 60
+FAST_LETTER_MS = 150
+
 def find_bridge_port():
     ports = serial.tools.list_ports.comports()
     keywords = ["CP210", "Silicon Labs", "CH340", "USB to UART", "FTDI"]
     candidates = []
 
-    # Find all Heltec/ESP32 compatible ports
     for port, desc, hwid in ports:
         if any(keyword.lower() in desc.lower() or keyword.lower() in hwid.lower() for keyword in keywords):
             candidates.append(port)
@@ -24,14 +27,10 @@ def find_bridge_port():
     print("Probing candidate ports for the Bridge...")
     for port in candidates:
         try:
-            # Open port and prevent ESP32 from resetting indefinitely
             ser = serial.Serial(port, BAUD_RATE, timeout=0.5)
             ser.setDTR(False)
             ser.setRTS(False)
-            
-            # Wait 1.5s in case opening the port triggered a hardware reset
             time.sleep(1.5) 
-            
             ser.write(b"PING\n")
             ser.flush()
 
@@ -57,7 +56,10 @@ def receive_from_bridge(ser):
                 if line.startswith("BRIDGE_LOG:"):
                     print(f"\n[🔧 {line}]")
                 elif ":" in line:
-                    sender_id, payload = line.split(":", 1)
+                    parts = line.split(":")
+                    sender_id = parts[0]
+                    # Handle both ID:MSG and ID:DIT:LETTER:MSG responses in the console
+                    payload = parts[-1] 
                     if sender_id != MY_ID:
                         print(payload, end='', flush=True)
                 else:
@@ -89,7 +91,8 @@ def main():
         while True:
             msg = input()
             if msg:
-                tx_payload = f"{MY_ID}:{msg}\n"
+                # Format: ID:DIT:LETTER:MSG
+                tx_payload = f"{MY_ID}:{FAST_DIT_MS}:{FAST_LETTER_MS}:{msg}\n"
                 ser.write(tx_payload.encode('utf-8'))
                 ser.flush()
     except KeyboardInterrupt:
