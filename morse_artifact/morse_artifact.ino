@@ -246,7 +246,7 @@ void updateDisplay() {
   display.setCursor(0, 16);
 
   if (isReceiving) {
-    display.print(">> INGÅENDE SIGNAL");
+    display.print(">> INGAAENDE SIGNAL");
   } else if (receivedMessage.length() > 0) {
     display.print(">> SIDST MODTAGET");
   } else {
