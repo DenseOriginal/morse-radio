@@ -19,8 +19,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 
-#define BUTTON_PIN 3
-#define LED_PIN 4
+#define BUTTON_PIN 0
+#define LED_PIN 35
 
 // Standard input timings (unchanged)
 const int DEBOUNCE_DELAY = 20;
@@ -84,7 +84,7 @@ void setup() {
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
   display.setCursor(0, 20);
-  display.print("BOOTING SYS...");
+  display.print("STARTER SYSTEM...");
   display.display();
 
   int state = radio.begin(868.0);
@@ -238,19 +238,19 @@ void updateDisplay() {
   display.fillRect(0, 0, 128, 12, SSD1306_WHITE);
   display.setTextColor(SSD1306_BLACK);
   display.setTextSize(1);
-  display.setCursor(34, 2);
-  display.print("MORSE CODE");
+  display.setCursor(32, 2);
+  display.print("MORSE RADIO");
 
   // Status Text & Divider
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 16);
 
   if (isReceiving) {
-    display.print(">> INCOMING SIGNAL");
+    display.print(">> INGÅENDE SIGNAL");
   } else if (receivedMessage.length() > 0) {
-    display.print(">> LAST RECEIVED");
+    display.print(">> SIDST MODTAGET");
   } else {
-    display.print(">> SECURE CHANNEL");
+    display.print(">> SIKKER KANAL");
   }
   display.drawLine(0, 26, 128, 26, SSD1306_WHITE);
 
