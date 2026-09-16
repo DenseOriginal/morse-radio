@@ -54,6 +54,23 @@
             flex-direction: column;
             background: #ece5dd;
         }
+        #device-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 8px 10px 0;
+            background: #ece5dd;
+        }
+        .device-tab {
+            flex: 1;
+            padding: 7px 4px;
+            border: 1px solid #ccc;
+            background: #fff;
+            color: #333;
+        }
+        .device-tab.active {
+            background: #007bff;
+            color: #fff;
+        }
         .message {
             max-width: 80%;
             margin-bottom: 10px;
@@ -75,6 +92,22 @@
             border-bottom-right-radius: 2px;
             box-shadow: 0 1px 1px rgba(0,0,0,0.1);
         }
+        .session-divider {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 8px 0 14px;
+            color: #777;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+        .session-divider::before,
+        .session-divider::after {
+            content: '';
+            height: 1px;
+            flex: 1;
+            background: #c5c5c5;
+        }
         #input-area {
             display: flex;
             padding: 10px;
@@ -88,9 +121,14 @@
             border-radius: 20px;
             outline: none;
             margin-right: 10px;
+            text-transform: uppercase;
         }
         #message-input:disabled {
             background: #e9e9e9;
+        }
+        #device-select {
+            padding: 9px;
+            margin-right: 8px;
         }
     </style>
 </head>
@@ -104,12 +142,31 @@
             <button id="disconnect-btn" disabled>Disconnect</button>
         </div>
     </header>
+
+    <div id="device-tabs" role="tablist" aria-label="Device chats">
+        <button class="device-tab active" data-device="1" role="tab">Device 1</button>
+        <button class="device-tab" data-device="2" role="tab">Device 2</button>
+        <button class="device-tab" data-device="3" role="tab">Device 3</button>
+        <button class="device-tab" data-device="4" role="tab">Device 4</button>
+        <button class="device-tab" data-device="5" role="tab">Device 5</button>
+        <button class="device-tab" data-device="6" role="tab">Device 6</button>
+        <button class="device-tab" data-device="7" role="tab">Device 7</button>
+    </div>
     
     <div id="chat-window">
         <!-- Chat bubbles will appear here -->
     </div>
     
     <div id="input-area">
+        <select id="device-select" disabled aria-label="Receiving device">
+            <option value="1">Device 1</option>
+            <option value="2">Device 2</option>
+            <option value="3">Device 3</option>
+            <option value="4">Device 4</option>
+            <option value="5">Device 5</option>
+            <option value="6">Device 6</option>
+            <option value="7">Device 7</option>
+        </select>
         <input type="text" id="message-input" placeholder="Type a message..." disabled>
         <button id="send-btn" disabled>Send</button>
     </div>
@@ -120,13 +177,68 @@
     let reader;
     let writer;
     let keepReading = true;
-    let currentRxBubble = null;
+    let incomingSerialData = '';
+    let activeDevice = '1';
+    const storageKey = 'heltec-lora-chat-history';
+    const chatHistories = {};
+    const pendingIncoming = {};
+    const previousSession = {};
+    for (let device = 1; device <= 7; device++) {
+        chatHistories[String(device)] = [];
+        pendingIncoming[String(device)] = '';
+        previousSession[String(device)] = false;
+    }
+
+    function loadChatState() {
+        try {
+            const savedState = JSON.parse(localStorage.getItem(storageKey));
+            if (!savedState) return;
+
+            for (let device = 1; device <= 7; device++) {
+                const id = String(device);
+                if (Array.isArray(savedState.histories?.[id])) {
+                    chatHistories[id] = savedState.histories[id].map((message) => ({
+                        ...message,
+                        session: 'previous'
+                    }));
+                }
+                if (typeof savedState.pendingIncoming?.[id] === 'string') {
+                    if (savedState.pendingIncoming[id]) {
+                        chatHistories[id].push({
+                            direction: 'rx',
+                            text: savedState.pendingIncoming[id],
+                            session: 'previous'
+                        });
+                    }
+                }
+                previousSession[id] = chatHistories[id].length > 0;
+            }
+        } catch (error) {
+            console.warn('Could not load saved chat history:', error);
+        }
+    }
+
+    function saveChatState() {
+        try {
+            localStorage.setItem(storageKey, JSON.stringify({
+                histories: chatHistories,
+                pendingIncoming
+            }));
+        } catch (error) {
+            console.warn('Could not save chat history:', error);
+        }
+    }
 
     const connectBtn = document.getElementById('connect-btn');
     const disconnectBtn = document.getElementById('disconnect-btn');
     const chatWindow = document.getElementById('chat-window');
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
+    const deviceSelect = document.getElementById('device-select');
+    const deviceTabs = document.querySelectorAll('.device-tab');
+
+    messageInput.disabled = true;
+    sendBtn.disabled = true;
 
     // Verify browser support
     if (!('serial' in navigator)) {
@@ -155,6 +267,8 @@
             disconnectBtn.disabled = false;
             messageInput.disabled = false;
             sendBtn.disabled = false;
+            deviceSelect.disabled = false;
+            deviceTabs.forEach((tab) => tab.disabled = false);
             messageInput.focus();
 
         } catch (err) {
@@ -185,41 +299,99 @@
     }
 
     function handleIncomingData(data) {
-        // If we don't have an active RX bubble, create a new one
-        if (!currentRxBubble) {
-            currentRxBubble = document.createElement('div');
-            currentRxBubble.classList.add('message', 'rx');
-            chatWindow.appendChild(currentRxBubble);
+        incomingSerialData += data;
+        const completeMessages = incomingSerialData.split('\n');
+        incomingSerialData = completeMessages.pop();
+
+        completeMessages.forEach((packet) => {
+            const match = packet.match(/^BRG_RX:([1-7]):([\s\S]*)$/);
+            if (!match) return;
+
+            const sender = match[1];
+            pendingIncoming[sender] += match[2];
+            saveChatState();
+            if (sender === activeDevice) renderChat();
+        });
+    }
+
+    function renderChat() {
+        chatWindow.replaceChildren();
+        const previousMessages = chatHistories[activeDevice].filter(
+            (message) => message.session === 'previous'
+        );
+        const currentMessages = chatHistories[activeDevice].filter(
+            (message) => message.session !== 'previous'
+        );
+
+        previousMessages.forEach((message) => {
+            const bubble = document.createElement('div');
+            bubble.classList.add('message', message.direction);
+            bubble.textContent = message.text;
+            chatWindow.appendChild(bubble);
+        });
+
+        if (previousSession[activeDevice]) {
+            const divider = document.createElement('div');
+            divider.className = 'session-divider';
+            divider.textContent = 'Previous session';
+            chatWindow.appendChild(divider);
         }
-        
-        // Append characters dynamically
-        currentRxBubble.textContent += data;
+
+        currentMessages.forEach((message) => {
+            const bubble = document.createElement('div');
+            bubble.classList.add('message', message.direction);
+            bubble.textContent = message.text;
+            chatWindow.appendChild(bubble);
+        });
+
+        if (pendingIncoming[activeDevice]) {
+            const pendingBubble = document.createElement('div');
+            pendingBubble.classList.add('message', 'rx');
+            pendingBubble.textContent = pendingIncoming[activeDevice];
+            chatWindow.appendChild(pendingBubble);
+        }
         scrollToBottom();
     }
 
+    function selectDevice(device) {
+        activeDevice = device;
+        deviceSelect.value = device;
+        deviceTabs.forEach((tab) => {
+            tab.classList.toggle('active', tab.dataset.device === device);
+            tab.setAttribute('aria-selected', tab.dataset.device === device);
+        });
+        renderChat();
+    }
+
     async function sendMessage() {
-        const text = messageInput.value;
-        if (!text) return;
+        const text = messageInput.value?.trim().toUpperCase();
+        if (!text || !writer) return;
 
-        // Create the TX bubble
-        const txBubble = document.createElement('div');
-        txBubble.classList.add('message', 'tx');
-        txBubble.textContent = text;
-        chatWindow.appendChild(txBubble);
-        scrollToBottom();
-
-        // Send via serial
-        if (writer) {
-            await writer.write(text);
+        const device = deviceSelect.value;
+        try {
+            await writer.write(`BRG_SEND:${device}:${text}`);
+        } catch (error) {
+            console.error('Could not send message:', error);
+            return;
         }
+
+        if (pendingIncoming[device]) {
+            chatHistories[device].push({
+                direction: 'rx',
+                text: pendingIncoming[device],
+                session: 'current'
+            });
+            pendingIncoming[device] = '';
+        }
+
+        chatHistories[device].push({ direction: 'tx', text, session: 'current' });
+        saveChatState();
+        renderChat();
 
         // Clear input field
         messageInput.value = '';
 
-        // *** Key Logic Requirement ***
-        // Nullify the current RX bubble so that any new incoming 
-        // characters are treated as a brand-new message.
-        currentRxBubble = null;
+        incomingSerialData = '';
     }
 
     async function disconnectSerial() {
@@ -239,11 +411,15 @@
             await port.close();
         }
 
+        writer = null;
+        port = null;
+
         connectBtn.disabled = false;
         disconnectBtn.disabled = true;
         messageInput.disabled = true;
         sendBtn.disabled = true;
-        currentRxBubble = null;
+        deviceSelect.disabled = true;
+        deviceTabs.forEach((tab) => tab.disabled = true);
     }
 
     function scrollToBottom() {
@@ -254,6 +430,10 @@
     connectBtn.addEventListener('click', connectSerial);
     disconnectBtn.addEventListener('click', disconnectSerial);
     sendBtn.addEventListener('click', sendMessage);
+    deviceTabs.forEach((tab) => {
+        tab.addEventListener('click', () => selectDevice(tab.dataset.device));
+    });
+    deviceSelect.addEventListener('change', () => selectDevice(deviceSelect.value));
     
     // Allow pressing "Enter" to send
     messageInput.addEventListener('keypress', (e) => {
@@ -261,6 +441,9 @@
             sendMessage();
         }
     });
+
+    loadChatState();
+    renderChat();
 </script>
 
 </body>

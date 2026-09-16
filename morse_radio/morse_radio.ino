@@ -19,6 +19,8 @@
 #define VBAT_PIN 1
 #define VBAT_CTRL 37
 
+const char DEVICE_ID = '3';
+
 SX1262 radio = new Module(NSS, DIO1, NRST, BUSY);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, RST_OLED, SCL_OLED, SDA_OLED);
 
@@ -86,6 +88,14 @@ String encodeMorse(char c) {
   if (c >= 'A' && c <= 'Z') return morseAlphabet[c - 'A'];
   if (c >= '0' && c <= '9') return morseAlphabet[c - '0' + 26];
   return "";
+}
+
+String makePacket(bool fromBridge, char id, const String& message) {
+  uint8_t header = (fromBridge ? 0x08 : 0x00) | (id - '0');
+  String packet;
+  packet += (char)header;
+  packet += message;
+  return packet;
 }
 
 int getBatteryPct() {
@@ -253,8 +263,18 @@ void loop() {
         bridgeMode = false;
         radioState = "RDY";
         displayNeedsUpdate = true;
+      } else if (bridgeMode && cleanStr.startsWith("BRG_SEND:")) {
+        int separator = cleanStr.indexOf(':', 9);
+        if (separator > 9) {
+          char destination = cleanStr.charAt(9);
+          String message = cleanStr.substring(separator + 1);
+          if (destination >= '1' && destination <= '7' && message.length() > 0) {
+            txQueue += makePacket(true, destination, message);
+            displayNeedsUpdate = true;
+          }
+        }
       } else if (bridgeMode && cleanStr.length() > 0) {
-        txQueue += cleanStr;
+        txQueue += makePacket(true, '1', cleanStr);
         displayNeedsUpdate = true;
       }
     }
@@ -302,7 +322,8 @@ void loop() {
     radioState = "TX";
     updateDisplay();
     
-    radio.startTransmit(txQueue);
+    String packet = bridgeMode ? txQueue : makePacket(false, DEVICE_ID, txQueue);
+    radio.startTransmit(packet);
     txQueue = ""; 
     isTransmitting = true;
   }
@@ -319,7 +340,22 @@ void loop() {
       String rxData;
       int state = radio.readData(rxData);
       
-      if (state == RADIOLIB_ERR_NONE) {
+      if (state == RADIOLIB_ERR_NONE && rxData.length() >= 1) {
+        uint8_t header = (uint8_t)rxData.charAt(0);
+        bool validHeader = (header & 0xF0) == 0;
+        bool packetFromBridge = (header & 0x08) != 0;
+        char packetId = (char)('0' + (header & 0x07));
+        bool isForThisDevice = bridgeMode
+          ? validHeader && !packetFromBridge && packetId != '0'
+          : validHeader && packetFromBridge && packetId == DEVICE_ID;
+
+        if (!isForThisDevice) {
+          radio.standby();
+          radio.startReceive();
+          return;
+        }
+
+        rxData.remove(0, 1);
         if (lastDirection == DIR_TX) textLog = ""; 
         lastDirection = DIR_RX;
         
@@ -336,7 +372,10 @@ void loop() {
         hasSignalInfo = true;
         
         if (bridgeMode) {
-          Serial.print(rxData);
+          Serial.print("BRG_RX:");
+          Serial.print(packetId);
+          Serial.print(":");
+          Serial.println(rxData);
         }
       }
       
