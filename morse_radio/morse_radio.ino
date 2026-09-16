@@ -19,7 +19,7 @@
 #define VBAT_PIN 1
 #define VBAT_CTRL 37
 
-const char DEVICE_ID = '3';
+const char DEVICE_ID = '1';
 
 SX1262 radio = new Module(NSS, DIO1, NRST, BUSY);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, RST_OLED, SCL_OLED, SDA_OLED);
@@ -90,8 +90,10 @@ String encodeMorse(char c) {
   return "";
 }
 
-String makePacket(bool fromBridge, char id, const String& message) {
-  uint8_t header = (fromBridge ? 0x08 : 0x00) | (id - '0');
+String makePacket(bool broadcast, bool fromBridge, char id, const String& message) {
+  uint8_t header = (broadcast ? 0x10 : 0x00)
+    | (fromBridge ? 0x08 : 0x00)
+    | (id - '0');
   String packet;
   packet += (char)header;
   packet += message;
@@ -268,13 +270,16 @@ void loop() {
         if (separator > 9) {
           char destination = cleanStr.charAt(9);
           String message = cleanStr.substring(separator + 1);
-          if (destination >= '1' && destination <= '7' && message.length() > 0) {
-            txQueue += makePacket(true, destination, message);
+          if (message.length() > 0 && destination == '*') {
+            txQueue += makePacket(true, true, '0', message);
+            displayNeedsUpdate = true;
+          } else if (destination >= '1' && destination <= '7' && message.length() > 0) {
+            txQueue += makePacket(false, true, destination, message);
             displayNeedsUpdate = true;
           }
         }
       } else if (bridgeMode && cleanStr.length() > 0) {
-        txQueue += makePacket(true, '1', cleanStr);
+        txQueue += makePacket(false, true, '1', cleanStr);
         displayNeedsUpdate = true;
       }
     }
@@ -322,7 +327,7 @@ void loop() {
     radioState = "TX";
     updateDisplay();
     
-    String packet = bridgeMode ? txQueue : makePacket(false, DEVICE_ID, txQueue);
+    String packet = bridgeMode ? txQueue : makePacket(false, false, DEVICE_ID, txQueue);
     radio.startTransmit(packet);
     txQueue = ""; 
     isTransmitting = true;
@@ -342,12 +347,13 @@ void loop() {
       
       if (state == RADIOLIB_ERR_NONE && rxData.length() >= 1) {
         uint8_t header = (uint8_t)rxData.charAt(0);
-        bool validHeader = (header & 0xF0) == 0;
+        bool validHeader = (header & 0xE0) == 0;
+        bool isBroadcast = (header & 0x10) != 0;
         bool packetFromBridge = (header & 0x08) != 0;
         char packetId = (char)('0' + (header & 0x07));
         bool isForThisDevice = bridgeMode
-          ? validHeader && !packetFromBridge && packetId != '0'
-          : validHeader && packetFromBridge && packetId == DEVICE_ID;
+          ? validHeader && !packetFromBridge && (isBroadcast || packetId != '0')
+          : validHeader && packetFromBridge && (isBroadcast || packetId == DEVICE_ID);
 
         if (!isForThisDevice) {
           radio.standby();
@@ -375,6 +381,7 @@ void loop() {
           Serial.print("BRG_RX:");
           Serial.print(packetId);
           Serial.print(":");
+          Serial.print(isBroadcast ? "1:" : "0:");
           Serial.println(rxData);
         }
       }

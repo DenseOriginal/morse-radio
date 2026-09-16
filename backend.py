@@ -30,7 +30,7 @@ def main():
         ser.write(b'BRG_ON')
         print("Sent Bridge Mode activation string.")
         
-        print("Type a device ID (1-7), a space, and a message (Ctrl+C to exit).\n")
+        print("Type a device ID (1-7), * for all devices, a space, and a message (Ctrl+C to exit).\n")
 
         rx_thread = threading.Thread(target=read_from_device, args=(ser,), daemon=True)
         rx_thread.start()
@@ -39,11 +39,11 @@ def main():
             try:
                 line = input("> ")
                 parts = line.split(' ', 1)
-                if len(parts) == 2 and parts[0] in '1234567' and parts[1]:
+                if len(parts) == 2 and (parts[0] in '1234567' or parts[0] == '*') and parts[1]:
                     command = f"BRG_SEND:{parts[0]}:{parts[1]}"
                     ser.write(command.encode('ascii', errors='ignore'))
                 else:
-                    print("Use: <device ID 1-7> <message>")
+                    print("Use: <device ID 1-7 or *> <message>")
             except EOFError:
                 break
 

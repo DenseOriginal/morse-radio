@@ -22,7 +22,7 @@
             box-shadow: 0 4px 10px rgba(0,0,0,0.1);
             display: flex;
             flex-direction: column;
-            height: 90vh;
+            height: 100vh;
             overflow: hidden;
         }
         header {
@@ -144,13 +144,13 @@
     </header>
 
     <div id="device-tabs" role="tablist" aria-label="Device chats">
-        <button class="device-tab active" data-device="1" role="tab">Device 1</button>
-        <button class="device-tab" data-device="2" role="tab">Device 2</button>
-        <button class="device-tab" data-device="3" role="tab">Device 3</button>
-        <button class="device-tab" data-device="4" role="tab">Device 4</button>
-        <button class="device-tab" data-device="5" role="tab">Device 5</button>
-        <button class="device-tab" data-device="6" role="tab">Device 6</button>
-        <button class="device-tab" data-device="7" role="tab">Device 7</button>
+        <button class="device-tab active" data-device="1" role="tab">ID 1</button>
+        <button class="device-tab" data-device="2" role="tab">ID 2</button>
+        <button class="device-tab" data-device="3" role="tab">ID 3</button>
+        <button class="device-tab" data-device="4" role="tab">ID 4</button>
+        <button class="device-tab" data-device="5" role="tab">ID 5</button>
+        <button class="device-tab" data-device="6" role="tab">ID 6</button>
+        <button class="device-tab" data-device="7" role="tab">ID 7</button>
     </div>
     
     <div id="chat-window">
@@ -159,6 +159,7 @@
     
     <div id="input-area">
         <select id="device-select" disabled aria-label="Receiving device">
+            <option value="*">All devices</option>
             <option value="1">Device 1</option>
             <option value="2">Device 2</option>
             <option value="3">Device 3</option>
@@ -304,13 +305,20 @@
         incomingSerialData = completeMessages.pop();
 
         completeMessages.forEach((packet) => {
-            const match = packet.match(/^BRG_RX:([1-7]):([\s\S]*)$/);
+            const match = packet.match(/^BRG_RX:([1-7]):([01]):([\s\S]*)$/);
             if (!match) return;
 
             const sender = match[1];
-            pendingIncoming[sender] += match[2];
+            const isBroadcast = match[2] === '1';
+            const message = match[3];
+            const recipients = isBroadcast
+                ? Object.keys(pendingIncoming)
+                : [sender];
+            recipients.forEach((recipient) => {
+                pendingIncoming[recipient] += message;
+            });
             saveChatState();
-            if (sender === activeDevice) renderChat();
+            if (isBroadcast || sender === activeDevice) renderChat();
         });
     }
 
@@ -354,6 +362,7 @@
     }
 
     function selectDevice(device) {
+        if (!chatHistories[device]) return;
         activeDevice = device;
         deviceSelect.value = device;
         deviceTabs.forEach((tab) => {
@@ -375,16 +384,23 @@
             return;
         }
 
-        if (pendingIncoming[device]) {
-            chatHistories[device].push({
-                direction: 'rx',
-                text: pendingIncoming[device],
-                session: 'current'
-            });
-            pendingIncoming[device] = '';
-        }
+        const recipients = device === '*'
+            ? Object.keys(chatHistories)
+            : [device];
+        recipients.forEach((recipient) => {
+            if (pendingIncoming[recipient]) {
+                chatHistories[recipient].push({
+                    direction: 'rx',
+                    text: pendingIncoming[recipient],
+                    session: 'current'
+                });
+                pendingIncoming[recipient] = '';
+            }
+        });
 
-        chatHistories[device].push({ direction: 'tx', text, session: 'current' });
+        recipients.forEach((recipient) => {
+            chatHistories[recipient].push({ direction: 'tx', text, session: 'current' });
+        });
         saveChatState();
         renderChat();
 
