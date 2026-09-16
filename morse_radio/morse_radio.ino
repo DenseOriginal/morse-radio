@@ -40,6 +40,7 @@ String morseBuffer = "";
 String textLog = "";
 String txQueue = "";
 String radioState = "RDY";
+String serialBuffer = "";
 bool displayNeedsUpdate = false;
 bool isTransmitting = false;
 bool bridgeMode = false;
@@ -194,6 +195,7 @@ void handlePlayback() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTimeout(10);
   
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
@@ -201,18 +203,12 @@ void setup() {
   digitalWrite(VBAT_CTRL, HIGH);
   analogReadResolution(12);
   
-  // Check if button is held during boot to enable Bridge Mode
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    bridgeMode = true;
-    radioState = "BRG";
-  } else {
-    radioState = "RDY";
-  }
+  bridgeMode = false;
+  radioState = "RDY";
   
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tf); 
   
-  // Custom Sync Word 0x42 to reject standard LoRaWAN traffic
   int state = radio.begin(868.0, 125.0, 12, 5, 0x42, 22);
   
   if (state == RADIOLIB_ERR_NONE) {
@@ -230,15 +226,28 @@ void loop() {
   bool btnState = (digitalRead(BUTTON_PIN) == LOW);
   unsigned long now = millis();
 
-  // Only process serial input if Bridge Mode is active
-  if (bridgeMode) {
-    while (Serial.available()) {
-      char c = Serial.read();
-      // Filter out RF noise coupling (only accept printable ASCII)
-      if (c >= 32 && c <= 126) {
-        txQueue += String(c);
-        displayNeedsUpdate = true;
-      }
+  // Process serial input for Bridge Mode commands or TX queue
+  if (Serial.available()) {
+    String incoming = Serial.readString();
+    String cleanStr = "";
+    
+    // Filter for printable ASCII
+    for (int i = 0; i < incoming.length(); i++) {
+      char c = incoming.charAt(i);
+      if (c >= 32 && c <= 126) cleanStr += c;
+    }
+    
+    if (cleanStr.indexOf("BRG_ON") >= 0) {
+      bridgeMode = true;
+      radioState = "BRG";
+      displayNeedsUpdate = true;
+    } else if (cleanStr.indexOf("BRG_OFF") >= 0) {
+      bridgeMode = false;
+      radioState = "RDY";
+      displayNeedsUpdate = true;
+    } else if (bridgeMode && cleanStr.length() > 0) {
+      txQueue += cleanStr;
+      displayNeedsUpdate = true;
     }
   }
 

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heltec LoRa Serial Chat</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #app-container {
+            width: 100%;
+            max-width: 500px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            height: 90vh;
+            overflow: hidden;
+        }
+        header {
+            background: #333;
+            color: #fff;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        button {
+            cursor: pointer;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            background: #007bff;
+            color: white;
+            font-weight: bold;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #chat-window {
+            flex-grow: 1;
+            padding: 15px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            background: #ece5dd;
+        }
+        .message {
+            max-width: 80%;
+            margin-bottom: 10px;
+            padding: 10px 14px;
+            border-radius: 15px;
+            word-wrap: break-word;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+        .message.rx {
+            align-self: flex-start;
+            background: #fff;
+            border-bottom-left-radius: 2px;
+            box-shadow: 0 1px 1px rgba(0,0,0,0.1);
+        }
+        .message.tx {
+            align-self: flex-end;
+            background: #dcf8c6;
+            border-bottom-right-radius: 2px;
+            box-shadow: 0 1px 1px rgba(0,0,0,0.1);
+        }
+        #input-area {
+            display: flex;
+            padding: 10px;
+            background: #f0f0f0;
+            border-top: 1px solid #ddd;
+        }
+        #message-input {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 20px;
+            outline: none;
+            margin-right: 10px;
+        }
+        #message-input:disabled {
+            background: #e9e9e9;
+        }
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <header>
+        <span>Heltec V3 Chat</span>
+        <div>
+            <button id="connect-btn">Connect</button>
+            <button id="disconnect-btn" disabled>Disconnect</button>
+        </div>
+    </header>
+    
+    <div id="chat-window">
+        <!-- Chat bubbles will appear here -->
+    </div>
+    
+    <div id="input-area">
+        <input type="text" id="message-input" placeholder="Type a message..." disabled>
+        <button id="send-btn" disabled>Send</button>
+    </div>
+</div>
+
+<script>
+    let port;
+    let reader;
+    let writer;
+    let keepReading = true;
+    let currentRxBubble = null;
+
+    const connectBtn = document.getElementById('connect-btn');
+    const disconnectBtn = document.getElementById('disconnect-btn');
+    const chatWindow = document.getElementById('chat-window');
+    const messageInput = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    // Verify browser support
+    if (!('serial' in navigator)) {
+        alert("Your browser does not support the Web Serial API. Please use Chrome, Edge, or Opera.");
+    }
+
+    async function connectSerial() {
+        try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+
+            // Set up writer
+            const textEncoder = new TextEncoderStream();
+            textEncoder.readable.pipeTo(port.writable);
+            writer = textEncoder.writable.getWriter();
+
+            // Set up reader
+            keepReading = true;
+            readLoop();
+
+            // Send BRG_ON to Heltec to activate bridge mode
+            await writer.write("BRG_ON");
+
+            // Update UI
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+            messageInput.disabled = false;
+            sendBtn.disabled = false;
+            messageInput.focus();
+
+        } catch (err) {
+            console.error("Connection failed:", err);
+        }
+    }
+
+    async function readLoop() {
+        const textDecoder = new TextDecoderStream();
+        port.readable.pipeTo(textDecoder.writable);
+        reader = textDecoder.readable.getReader();
+
+        try {
+            while (keepReading) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    break;
+                }
+                if (value) {
+                    handleIncomingData(value);
+                }
+            }
+        } catch (error) {
+            console.error("Read error:", error);
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    function handleIncomingData(data) {
+        // If we don't have an active RX bubble, create a new one
+        if (!currentRxBubble) {
+            currentRxBubble = document.createElement('div');
+            currentRxBubble.classList.add('message', 'rx');
+            chatWindow.appendChild(currentRxBubble);
+        }
+        
+        // Append characters dynamically
+        currentRxBubble.textContent += data;
+        scrollToBottom();
+    }
+
+    async function sendMessage() {
+        const text = messageInput.value;
+        if (!text) return;
+
+        // Create the TX bubble
+        const txBubble = document.createElement('div');
+        txBubble.classList.add('message', 'tx');
+        txBubble.textContent = text;
+        chatWindow.appendChild(txBubble);
+        scrollToBottom();
+
+        // Send via serial
+        if (writer) {
+            await writer.write(text);
+        }
+
+        // Clear input field
+        messageInput.value = '';
+
+        // *** Key Logic Requirement ***
+        // Nullify the current RX bubble so that any new incoming 
+        // characters are treated as a brand-new message.
+        currentRxBubble = null;
+    }
+
+    async function disconnectSerial() {
+        keepReading = false;
+        
+        if (writer) {
+            // Tell Heltec to exit bridge mode before closing
+            await writer.write("BRG_OFF");
+            await writer.releaseLock();
+        }
+        
+        if (reader) {
+            await reader.cancel();
+        }
+        
+        if (port) {
+            await port.close();
+        }
+
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        messageInput.disabled = true;
+        sendBtn.disabled = true;
+        currentRxBubble = null;
+    }
+
+    function scrollToBottom() {
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // Event Listeners
+    connectBtn.addEventListener('click', connectSerial);
+    disconnectBtn.addEventListener('click', disconnectSerial);
+    sendBtn.addEventListener('click', sendMessage);
+    
+    // Allow pressing "Enter" to send
+    messageInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            sendMessage();
+        }
+    });
+</script>
+
+</body>
+</html>
