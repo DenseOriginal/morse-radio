@@ -138,7 +138,7 @@
 
 <div id="app-container">
     <header>
-        <span onclick="navigator.usb.requestDevice({ filters: [] })">Heltec V3 Chat</span>
+        <span>Heltec V3 Chat</span>
         <div>
             <button id="connect-btn">Connect</button>
             <button id="disconnect-btn" disabled>Disconnect</button>
@@ -175,7 +175,9 @@
     </div>
 </div>
 
-<script>
+<script type="module">
+    import { serial } from 'https://cdn.jsdelivr.net/npm/web-serial-polyfill@1.0.15/+esm';
+
     let port;
     let reader;
     let writer;
@@ -243,14 +245,9 @@
     messageInput.disabled = true;
     sendBtn.disabled = true;
 
-    // Verify browser support
-    if (!('serial' in navigator)) {
-        alert("Your browser does not support the Web Serial API. Please use Chrome, Edge, or Opera.");
-    }
-
     async function connectSerial() {
         try {
-            port = await navigator.serial.requestPort();
+            port = await serial.requestPort({ filters: [] });
             await port.open({ baudRate: 115200 });
 
             // Set up writer
